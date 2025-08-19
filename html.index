@@ -1,0 +1,416 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ServiceHubNI — Single‑file Demo</title>
+  <style>
+    :root { --bg:#f7f7f8; --card:#fff; --text:#111; --muted:#666; --border:#e5e7eb; --brand:#0070f3; }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body { margin:0; font-family: system-ui,-apple-system,Segoe UI,Roboto,Inter,Ubuntu,Helvetica,Arial,sans-serif; color:var(--text); background:var(--bg); }
+    a { color: inherit; }
+    .container { max-width: 1100px; margin: 0 auto; padding: 16px; }
+    header.nav { position: sticky; top:0; z-index: 10; background:#fff; border-bottom:1px solid var(--border); }
+    .nav-inner { display:flex; gap:8px; align-items:center; justify-content:space-between; padding:12px 16px; }
+    .nav-links a { padding:8px 12px; border-radius: 8px; text-decoration: none; }
+    .nav-links a.active { background: var(--brand); color: #fff; font-weight: 600; }
+    .nav-right { display:flex; gap:10px; align-items:center; }
+    .btn { padding:8px 12px; border:1px solid var(--border); border-radius:8px; background:#fff; cursor:pointer; }
+    .btn[disabled] { cursor:not-allowed; opacity:.6; }
+    .btn.primary { border:none; background: var(--brand); color:#fff; font-weight:700; }
+    .card { background: var(--card); border:1px solid var(--border); border-radius:12px; box-shadow: 0 8px 24px rgba(0,0,0,.06); padding:14px; }
+    .grid { display:grid; gap:12px; grid-template-columns: repeat(auto-fill, minmax(280px,1fr)); }
+    .muted { color: var(--muted); }
+    .input { display:block; width:100%; padding:10px; border:1px solid var(--border); border-radius:8px; margin-bottom:12px; }
+    .table-wrap { overflow-x:auto; }
+    table { width:100%; border-collapse: collapse; background:#fff; border:1px solid var(--border); }
+    th, td { padding:8px 10px; border-bottom:1px solid #f1f3f5; text-align:left; white-space:nowrap; }
+    th { cursor: pointer; }
+    .toast { position: fixed; right: 16px; bottom: 16px; background:#fff; border:1px solid var(--border); border-radius: 8px; padding:10px 12px; box-shadow:0 6px 20px rgba(0,0,0,.12); }
+    .hidden { display:none; }
+    .center { display:flex; justify-content:center; align-items:center; min-height: 60vh; }
+    code { background:#f3f4f6; padding:2px 6px; border-radius:6px; }
+  </style>
+</head>
+<body>
+  <!--
+    Single-file demo of your app views with vanilla JS routing. This is for **reading** and simple demo only.
+    It calls your backend using fetch() with credentials and expects your Next.js rewrite (/api/* → http://localhost:4001/*)
+    when served from http://localhost:3000 or the same origin as the rewrite.
+
+    Pages included:
+      #/login            — Login (with already-signed-in helpers)
+      #/leads            — Leads list + Unlock
+      #/my-leads         — Unlocked leads
+      #/leads/<id>       — Lead detail (masked/unmasked)
+      #/admin/leads      — Admin leads table
+      #/admin/users      — Admin users table
+      #/admin/ping       — Optional ping tester (GET /health, POST /admin/echo)
+
+    NOTE: If you just want me to read the code, commit this file as index.html to GitHub. It’s okay if it isn’t fully runnable.
+  -->
+
+  <header class="nav">
+    <div class="nav-inner container">
+      <div class="nav-links">
+        <a id="link-leads" href="#/leads">Leads</a>
+        <a id="link-my-leads" href="#/my-leads">My Leads</a>
+        <a id="link-admin-leads" href="#/admin/leads">Admin: Leads</a>
+        <a id="link-admin-users" href="#/admin/users">Admin: Users</a>
+        <a id="link-admin-ping" href="#/admin/ping" title="Ping tester">Ping</a>
+      </div>
+      <div class="nav-right">
+        <span id="credits" class="muted">Credits: …</span>
+        <button id="btn-logout" class="btn">Logout</button>
+      </div>
+    </div>
+  </header>
+
+  <div class="container">
+    <div id="app"></div>
+  </div>
+
+  <div id="toast" class="toast hidden" role="alert"></div>
+
+  <script>
+    // ===== Helper: Basic client =====
+    function normalizePath(p){ const s=p.startsWith('/')?p:'/'+p; return s.replace(/\/{2,}/g,'/'); }
+    function toApiPath(p){ const n = normalizePath(p); return n.startsWith('/api/')? n : '/api' + (n.startsWith('/')? n : '/'+n); }
+
+    async function apiRequest(method, path, body, init){
+      const url = toApiPath(path);
+      const headers = Object.assign({}, (init&&init.headers)||{});
+      let payload = init && init.body;
+      const hasBody = body !== undefined && method !== 'GET';
+      if(hasBody && payload === undefined){
+        if(!headers['Content-Type']) headers['Content-Type'] = 'application/json';
+        if((headers['Content-Type']||'').includes('application/json')) payload = JSON.stringify(body);
+      }
+      const res = await fetch(url, Object.assign({
+        method,
+        headers,
+        body: payload,
+        credentials: 'include', // send/receive cookies
+        cache: 'no-store'
+      }, init||{}));
+
+      const ctype = res.headers.get('content-type')||'';
+      const isJSON = ctype.includes('application/json');
+      if(!res.ok){
+        const data = isJSON ? await res.json().catch(()=>({})) : await res.text().catch(()=>"");
+        const details = typeof data === 'string' ? data : JSON.stringify(data);
+        const err = new Error(`API ${res.status} ${res.statusText} on ${url}\n${details}`);
+        err.status = res.status;
+        throw err;
+      }
+      return isJSON ? res.json() : res.text();
+    }
+
+    const api = {
+      get:(p,init)=>apiRequest('GET',p,undefined,init),
+      post:(p,b,init)=>apiRequest('POST',p,b,init),
+      del:(p,init)=>apiRequest('DELETE',p,undefined,init)
+    };
+
+    // ===== Helpers =====
+    const $ = sel => document.querySelector(sel);
+    function setActiveLink(hash){
+      document.querySelectorAll('.nav-links a').forEach(a=>a.classList.remove('active'));
+      const link = document.querySelector(`.nav-links a[href="${hash}"]`);
+      if(link) link.classList.add('active');
+    }
+    function showToast(msg){ const t=$('#toast'); t.textContent=msg; t.classList.remove('hidden'); setTimeout(()=>t.classList.add('hidden'), 2500); }
+
+    async function loadCredits(){
+      try{
+        const d = await api.get('/credits/balance');
+        if(d && typeof d.balance === 'number') $('#credits').textContent = `Credits: ${d.balance}`;
+      }catch(e){ /* ignore; could be 401 */ }
+    }
+
+    async function logout(){ try{ await api.post('/auth/logout'); }catch(_){} location.hash = '#/login'; }
+    $('#btn-logout').addEventListener('click', logout);
+
+    // ===== Views =====
+    function LoginView(){
+      const root = document.createElement('div');
+      root.className = 'center';
+      root.innerHTML = `
+        <div class="card" style="max-width:420px; width:100%">
+          <h1 style="margin:0 0 12px 0; text-align:center">Sign in</h1>
+          <form id="login-form">
+            <input class="input" id="email" placeholder="Email" type="email" autocomplete="username" value="provider2@example.com" required />
+            <input class="input" id="password" placeholder="Password" type="password" autocomplete="current-password" value="123456" required />
+            <div id="login-error" class="muted" style="color:#b91c1c; margin-bottom:12px; display:none"></div>
+            <button id="btn-login" class="btn primary" type="submit">Sign in</button>
+            <div class="muted" style="margin-top:10px; font-size:12px">If you keep jumping to Leads, click Logout first.</div>
+          </form>
+        </div>`;
+
+      // If already signed in, show choice instead of auto-redirect
+      (async ()=>{
+        try{ const me = await api.get('/auth/me'); if(me && me.email){
+          const box = root.querySelector('.card');
+          box.innerHTML = `
+            <h1 style="margin:0 0 12px 0; text-align:center">You're already signed in</h1>
+            <p class="muted" style="margin-bottom:12px">Signed in as <strong>${me.email}</strong>.</p>
+            <div style="display:flex; gap:8px">
+              <a class="btn primary" href="#/leads" style="text-align:center; flex:1">Go to Leads</a>
+              <button class="btn" id="btn-logout-inline" style="flex:1">Log out</button>
+            </div>
+            <p class="muted" style="margin-top:12px">Need to switch account? Log out to show the sign-in form.</p>`;
+          box.querySelector('#btn-logout-inline').addEventListener('click', async ()=>{ await logout(); });
+        } }catch(_){ /* not signed in → show form */ }
+      })();
+
+      root.querySelector('#login-form').addEventListener('submit', async (e)=>{
+        e.preventDefault();
+        const email = root.querySelector('#email').value.trim();
+        const password = root.querySelector('#password').value;
+        root.querySelector('#btn-login').setAttribute('disabled','');
+        root.querySelector('#login-error').style.display='none';
+        try{
+          const resp = await api.post('/auth/login', { email, password });
+          if(!resp || resp.ok === false){ throw new Error((resp&&resp.error)||'Login failed'); }
+          await api.get('/auth/me');
+          location.hash = '#/leads';
+        }catch(err){
+          const el = root.querySelector('#login-error');
+          el.textContent = err && err.message ? err.message : 'Login failed';
+          el.style.display='block';
+        }finally{
+          root.querySelector('#btn-login').removeAttribute('disabled');
+        }
+      });
+
+      return root;
+    }
+
+    function LeadsView(){
+      const root = document.createElement('div');
+      root.innerHTML = `<h1 style="margin:16px 0">Available Leads</h1><div id="leads"></div>`;
+      const listEl = root.querySelector('#leads');
+
+      (async ()=>{
+        try{ await api.get('/auth/me'); }catch(e){ location.hash = '#/login'; return; }
+        try{
+          const data = await api.get('/leads');
+          const leads = Array.isArray(data.leads) ? data.leads : (Array.isArray(data) ? data : []);
+          if(leads.length === 0){ listEl.innerHTML = `<p class="muted">No leads yet.</p>`; return; }
+          const ul = document.createElement('ul'); ul.style.listStyle='none'; ul.style.padding='0';
+          leads.forEach(l=>{
+            const li = document.createElement('li');
+            li.className = 'card'; li.style.marginBottom='10px';
+            li.innerHTML = `
+              <div style="display:flex; justify-content:space-between; align-items:center">
+                <div><strong>${l.category||'—'}</strong> · ${l.area||'—'} · ${l.budget_band||'—'}</div>
+                <small>${l.purchased||0}/${l.max||'-'} sold</small>
+              </div>
+              <div style="margin-top:6px">${l.description||''}</div>
+              <div style="margin-top:10px; display:flex; gap:8px">
+                ${l.purchased_by_me ? `<span style="color:green; font-weight:600">(unlocked)</span>` : `<button class="btn" data-unlock="${l.id}">Unlock (1 credit)</button>`}
+                <a class="btn" href="#/leads/${l.id}">View</a>
+              </div>`;
+            ul.appendChild(li);
+          });
+          listEl.appendChild(ul);
+
+          listEl.addEventListener('click', async (ev)=>{
+            const btn = ev.target.closest('button[data-unlock]');
+            if(!btn) return; btn.setAttribute('disabled','');
+            const id = btn.getAttribute('data-unlock');
+            try{ await api.post(`/leads/${id}/unlock`); showToast('Lead unlocked!'); location.hash = '#/my-leads'; }
+            catch(e){ const msg = (e&&e.message||'').toLowerCase(); if(msg.includes('402')||msg.includes('insufficient')) showToast('Insufficient credits to unlock this lead.'); else showToast('Unlock failed'); }
+            finally{ btn.removeAttribute('disabled'); loadCredits(); }
+          });
+        }catch(e){ listEl.innerHTML = `<p style="color:#b91c1c">${e.message||'Failed to load'}</p>`; }
+      })();
+
+      return root;
+    }
+
+    function MyLeadsView(){
+      const root = document.createElement('div');
+      root.innerHTML = `<h1 style="margin:16px 0">My Leads</h1><div id="wrap"></div>`;
+      const wrap = root.querySelector('#wrap');
+
+      (async ()=>{
+        try{ await api.get('/auth/me'); }catch(e){ location.hash = '#/login'; return; }
+        try{
+          const data = await api.get('/leads/mine/list');
+          const leads = Array.isArray(data.leads) ? data.leads : (Array.isArray(data) ? data : []);
+          if(leads.length === 0){ wrap.innerHTML = `<p class="muted">No purchases yet.</p>`; return; }
+          const grid = document.createElement('div'); grid.className='grid';
+          leads.forEach(l=>{
+            const card = document.createElement('div'); card.className='card';
+            card.innerHTML = `
+              <div style="display:flex; justify-content:space-between; gap:12px">
+                <div><strong>${l.category||'—'}</strong> · ${l.area||'—'} · ${l.budget_band||'—'}</div>
+                ${l.purchased_at?`<small>Purchased: ${new Date(l.purchased_at).toLocaleString('en-GB')}</small>`:''}
+              </div>
+              <div style="margin-top:6px">${l.description||''}</div>
+              ${l.exclusivity_until?`<div style="margin-top:6px"><small>Exclusivity until: ${new Date(l.exclusivity_until).toLocaleString('en-GB')}</small></div>`:''}
+              <div style="margin-top:10px"><a class="btn" href="#/leads/${l.id}">View</a></div>`;
+            grid.appendChild(card);
+          });
+          wrap.appendChild(grid);
+        }catch(e){ wrap.innerHTML = `<p style=\"color:#b91c1c\">${e.message||'Failed to load'}</p>`; }
+      })();
+
+      return root;
+    }
+
+    function LeadDetailView(id){
+      const root = document.createElement('div');
+      root.innerHTML = `<h1 style="margin:16px 0">Lead #${id}</h1><div id="wrap"></div>`;
+      const wrap = root.querySelector('#wrap');
+
+      (async ()=>{
+        try{ await api.get('/auth/me'); }catch(e){ location.hash = '#/login'; return; }
+        try{
+          const lead = await api.get(`/leads/${id}`);
+          const locked = !lead.purchased_by_me;
+          const contact = locked
+            ? `<div><strong>Name:</strong> ••••••••</div><div><strong>Email:</strong> ••••••••</div><div><strong>Phone:</strong> ••••••••</div><button id="btn-unlock" class="btn" style="margin-top:10px">Unlock (1 credit)</button>`
+            : `<div><strong>Name:</strong> ${lead.name||'—'}</div><div><strong>Email:</strong> ${lead.email||'—'}</div><div><strong>Phone:</strong> ${lead.phone||'—'}</div>`;
+
+          wrap.innerHTML = `
+            <div class="card">
+              <div class="muted">${lead.category||'—'} · ${lead.area||'—'} · ${lead.budget_band||'—'}</div>
+              <p style="margin-top:8px">${lead.description||''}</p>
+              <hr style="margin:16px 0" />
+              <h3>Contact</h3>
+              ${contact}
+            </div>`;
+
+          const btn = document.getElementById('btn-unlock');
+          if(btn){ btn.addEventListener('click', async ()=>{
+            btn.setAttribute('disabled','');
+            try{ await api.post(`/leads/${id}/unlock`); showToast('Lead unlocked!'); location.hash = `#/leads/${id}`; }
+            catch(e){ const msg=(e&&e.message||'').toLowerCase(); if(msg.includes('402')||msg.includes('insufficient')) showToast('Insufficient credits.'); else showToast('Unlock failed'); }
+            finally{ btn.removeAttribute('disabled'); loadCredits(); }
+          }); }
+        }catch(e){ wrap.innerHTML = `<p style=\"color:#b91c1c\">${e.message||'Failed to load'}</p>`; }
+      })();
+
+      return root;
+    }
+
+    function AdminLeadsView(){
+      const root = document.createElement('div');
+      root.innerHTML = `<h1 style="margin:16px 0">Admin — Leads</h1><div id="wrap"></div>`;
+      const wrap = root.querySelector('#wrap');
+
+      (async ()=>{
+        try{ const me = await api.get('/auth/me'); if(me.role !== 'admin') throw new Error('Admins only'); }
+        catch(e){ wrap.innerHTML = `<p class="muted">Admins only.</p>`; return; }
+        try{
+          const data = await api.get('/admin/leads');
+          const rows = Array.isArray(data.leads) ? data.leads : (Array.isArray(data) ? data : []);
+          if(rows.length === 0){ wrap.innerHTML = `<p class="muted">No leads found.</p>`; return; }
+          const table = document.createElement('table');
+          table.innerHTML = `<thead><tr>
+              <th>ID</th><th>Category</th><th>Area</th><th>Budget</th><th>Sold</th><th>Max</th><th>Created</th><th>Description</th>
+          </tr></thead><tbody></tbody>`;
+          const tb = table.querySelector('tbody');
+          rows.forEach(r=>{
+            const tr = document.createElement('tr');
+            tr.innerHTML = `<td>${r.id}</td><td>${r.category||'—'}</td><td>${r.area||'—'}</td><td>${r.budget_band||'—'}</td><td>${r.purchased??'—'}</td><td>${r.max??'—'}</td><td>${r.created_at? new Date(r.created_at).toLocaleString('en-GB'):'—'}</td><td style="max-width:420px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${r.description||'—'}</td>`;
+            tb.appendChild(tr);
+          });
+          const wrapDiv = document.createElement('div'); wrapDiv.className='table-wrap card'; wrapDiv.appendChild(table);
+          wrap.appendChild(wrapDiv);
+        }catch(e){ wrap.innerHTML = `<p style=\"color:#b91c1c\">${e.message||'Failed to load'}</p>`; }
+      })();
+
+      return root;
+    }
+
+    function AdminUsersView(){
+      const root = document.createElement('div');
+      root.innerHTML = `<h1 style="margin:16px 0">Admin — Users</h1><div id="wrap"></div>`;
+      const wrap = root.querySelector('#wrap');
+
+      (async ()=>{
+        try{ const me = await api.get('/auth/me'); if(me.role !== 'admin') throw new Error('Admins only'); }
+        catch(e){ wrap.innerHTML = `<p class="muted">Admins only.</p>`; return; }
+        try{
+          const data = await api.get('/admin/users');
+          const rows = Array.isArray(data.users) ? data.users : (Array.isArray(data) ? data : []);
+          if(rows.length === 0){ wrap.innerHTML = `<p class="muted">No users found.</p>`; return; }
+          const table = document.createElement('table');
+          table.innerHTML = `<thead><tr>
+              <th>ID</th><th>Email</th><th>Role</th><th>Credits</th><th>Created</th><th>Last login</th>
+          </tr></thead><tbody></tbody>`;
+          const tb = table.querySelector('tbody');
+          rows.forEach(u=>{
+            const tr = document.createElement('tr');
+            tr.innerHTML = `<td>${u.id}</td><td>${u.email}</td><td>${u.role}</td><td>${typeof u.credits==='number'?u.credits:'—'}</td><td>${u.created_at? new Date(u.created_at).toLocaleString('en-GB'):'—'}</td><td>${u.last_login_at? new Date(u.last_login_at).toLocaleString('en-GB'):'—'}</td>`;
+            tb.appendChild(tr);
+          });
+          const wrapDiv = document.createElement('div'); wrapDiv.className='table-wrap card'; wrapDiv.appendChild(table);
+          wrap.appendChild(wrapDiv);
+        }catch(e){ wrap.innerHTML = `<p style=\"color:#b91c1c\">${e.message||'Failed to load'}</p>`; }
+      })();
+
+      return root;
+    }
+
+    function PingView(){
+      const root = document.createElement('div');
+      root.innerHTML = `<h1 style="margin:16px 0">Admin — Ping</h1>
+        <div class="grid">
+          <div class="card"><h3>GET /health</h3><pre id="ping" style="background:#f6f6f6; padding:10px; border-radius:8px; overflow:auto"></pre></div>
+          <div class="card"><h3>POST /admin/echo</h3>
+            <div style="display:flex; gap:8px">
+              <input id="echoText" class="input" placeholder="Type a message" value="Hello from Admin" />
+              <button id="btn-echo" class="btn">Send</button>
+            </div>
+            <pre id="echo" style="background:#f6f6f6; padding:10px; border-radius:8px; overflow:auto"></pre>
+          </div>
+        </div>`;
+
+      (async ()=>{
+        try{ const res = await api.get('/health'); root.querySelector('#ping').textContent = JSON.stringify(res,null,2); }
+        catch(e){ root.querySelector('#ping').textContent = e.message||'Error'; }
+      })();
+
+      root.querySelector('#btn-echo').addEventListener('click', async ()=>{
+        const msg = root.querySelector('#echoText').value;
+        try{ const res = await api.post('/admin/echo', { msg }); root.querySelector('#echo').textContent = JSON.stringify(res,null,2); }
+        catch(e){ root.querySelector('#echo').textContent = e.message||'Error'; }
+      });
+
+      return root;
+    }
+
+    // ===== Router =====
+    async function guardSessionFor(hash){
+      // Update credits and link highlighting on any route
+      setActiveLink(hash);
+      loadCredits();
+    }
+
+    function mount(view){ const app = $('#app'); app.innerHTML=''; app.appendChild(view); }
+
+    function route(){
+      const hash = location.hash || '#/login';
+      guardSessionFor(hash);
+      const path = hash.replace(/^#\//,'');
+      if(path === 'login') return mount(LoginView());
+      if(path === 'leads') return mount(LeadsView());
+      if(path === 'my-leads') return mount(MyLeadsView());
+      if(path.startsWith('leads/')){ const id = path.split('/')[1]; return mount(LeadDetailView(id)); }
+      if(path === 'admin/leads') return mount(AdminLeadsView());
+      if(path === 'admin/users') return mount(AdminUsersView());
+      if(path === 'admin/ping') return mount(PingView());
+      // default
+      return mount(LoginView());
+    }
+
+    window.addEventListener('hashchange', route);
+    window.addEventListener('load', route);
+  </script>
+</body>
+</html>
